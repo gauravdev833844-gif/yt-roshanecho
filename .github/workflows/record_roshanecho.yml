@@ -8,16 +8,29 @@ on:
         required: true
         default: '@Roshanecho'
       runtime_seconds:
-        description: 'Shift Duration in Seconds (Default: 13500 = 3h 45m)'
+        description: 'Shift Duration in Seconds (Default: 14400 = 4h)'
         required: false
-        default: '13500'
+        default: '14400'
+      shifts_left:
+        description: 'Continuation shifts after this one (default 2 = 3 shifts total / ~12.5h)'
+        required: false
+        default: '2'
+      always_continue:
+        description: 'true = automatically trigger next shift when current shift ends'
+        required: false
+        default: 'true'
   schedule:
+    # 24/7 background cron safety net every 4 hours
     - cron: '0 */4 * * *'
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   record:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
 
     steps:
       - name: Checkout Repository
@@ -47,7 +60,7 @@ jobs:
       - name: Run Autonomous YouTube Stream Watcher & Recorder
         env:
           TARGET_CHANNEL: ${{ github.event.inputs.channel || '@Roshanecho' }}
-          MAX_RUNTIME_SECONDS: ${{ github.event.inputs.runtime_seconds || '13500' }}
+          MAX_RUNTIME_SECONDS: ${{ github.event.inputs.runtime_seconds || '14400' }}
           COOKIES_FILE: cookies.txt
         run: |
           python -u recorder_roshanecho.py
@@ -57,6 +70,7 @@ jobs:
         run: |
           mkdir -p final_recordings
           find downloads/ -type f -name "*.mkv" -exec cp -v {} final_recordings/ \; || true
+          find downloads/ -type f -name "*.mp4" -exec cp -v {} final_recordings/ \; || true
           ls -lh final_recordings/ || true
 
       - name: Upload to Gofile Relay
@@ -75,3 +89,27 @@ jobs:
             downloads/**/*.mkv
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Dispatch Next Continuation Shift
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHIFTS_LEFT: ${{ github.event.inputs.shifts_left || '2' }}
+          ALWAYS_CONTINUE: ${{ github.event.inputs.always_continue || 'true' }}
+          RUNTIME_SECONDS: ${{ github.event.inputs.runtime_seconds || '14400' }}
+          CHANNEL: ${{ github.event.inputs.channel || '@Roshanecho' }}
+        run: |
+          REMAINING=$(( SHIFTS_LEFT - 1 ))
+          if [ "$REMAINING" -ge 0 ] && [ "$ALWAYS_CONTINUE" == "true" ]; then
+            echo "Chaining next shift for Roshan (${REMAINING} shifts left)..."
+            gh workflow run record_roshanecho.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$GITHUB_REF_NAME" \
+              -f channel="$CHANNEL" \
+              -f runtime_seconds="$RUNTIME_SECONDS" \
+              -f shifts_left="$REMAINING" \
+              -f always_continue="true"
+            echo "Next continuation shift for Roshan dispatched successfully!"
+          else
+            echo "No more shifts remaining or continuation disabled."
+          fi
