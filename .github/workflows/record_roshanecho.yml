@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   record:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
 
     steps:
@@ -43,8 +43,22 @@ jobs:
 
       - name: Install System Tools & FFmpeg
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg jq curl
+          printf 'Acquire::ForceIPv4 "true";\nAcquire::http::Timeout "10";\nAcquire::https::Timeout "10";\nAcquire::Retries "2";\n' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 > /dev/null
+          MISSING_PKGS=""
+          command -v ffmpeg >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS ffmpeg"
+          command -v jq >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS jq"
+          command -v curl >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS curl"
+          if [ -n "$MISSING_PKGS" ]; then
+            CODENAME=$(lsb_release -cs 2>/dev/null || echo "noble")
+            for m in "https://mirrors.edge.kernel.org/ubuntu/" "http://us.archive.ubuntu.com/ubuntu/" "http://archive.ubuntu.com/ubuntu/"; do
+              if curl -sfI --max-time 4 "${m}dists/${CODENAME}/Release" >/dev/null 2>&1; then
+                sudo sed -i "s|http://azure.archive.ubuntu.com/ubuntu/|$m|g; s|http://azure.archive.ubuntu.com/ubuntu|$m|g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/apt-mirrors.txt 2>/dev/null || true
+                break
+              fi
+            done
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $MISSING_PKGS
+          fi
           pip install -U yt-dlp
 
       - name: Deploy Membership Authentication Cookies
